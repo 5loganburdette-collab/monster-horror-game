@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Escape the Grim Reaper</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            text-shadow: 2px 2px 4px #000;
+            font-size: 18px;
+            pointer-events: none;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 6px;
+            height: 6px;
+            background-color: rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #instructions {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            text-align: center;
+            cursor: pointer;
+            z-index: 10;
+        }
+        #instructions h1 { color: #ff3333; font-size: 48px; margin-bottom: 10px; }
+        #game-over, #victory {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+        }
+        #game-over h1 { color: #ff0000; font-size: 64px; }
+        #victory h1 { color: #00ff00; font-size: 64px; }
+        .restart-btn {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #222;
+            color: #fff;
+            border: 2px solid #555;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 18px;
+        }
+        .restart-btn:hover { background: #444; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="instructions">
+        <h1>HE IS FOLLOWING YOU</h1>
+        <p>The cloaked entity hunts you through the ruined halls.</p>
+        <p><strong>WASD / Arrows</strong> to Move | <strong>Mouse</strong> to Look</p>
+        <p>Grab your <strong>GOLD KEY</strong>, then find the <strong>RED ESCAPE DOOR</strong>.</p>
+        <h2 style="color: #ff3333; margin-top: 30px;">CLICK TO ENTER THE DARKNESS</h2>
+    </div>
+
+    <div id="game-over">
+        <h1>YOU WERE CAUGHT</h1>
+        <p style="color: #aaa;">Your soul belongs to the reaper now.</p>
+        <button class="restart-btn" onclick="location.reload()">TRY AGAIN</button>
+    </div>
+
+    <div id="victory">
+        <h1>YOU ESCAPED</h1>
+        <p style="color: #aaa;">You unlocked the heavy door and survived.</p>
+        <button class="restart-btn" onclick="location.reload()">PLAY AGAIN</button>
+    </div>
+
+    <div id="ui">
+        <div id="objective">Objective: Locate the Gold Key</div>
+    </div>
+    <div id="crosshair"></div>
+    <div id="canvas-container"></div>
+
+    <script>
+        // REPLACE THESE WITH BASE64 STRINGS OR ONLINE URLs IF CORS BLOCKS LOCAL LOADING
+        const WALL_TEXTURE_URL = "texture-ancient-wall-house-background-ruined-plaster-old-house-texture-ancient-wall-131181960.webp";
+        const KEY_TEXTURE_URL = "key_PNG103658.png";
+        const MONSTER_TEXTURE_URL = "monster image.webp";
+
+        let scene, camera, renderer;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        
+        let hasKey = false;
+        let isGameOver = false;
+        const mapSize = 100;
+
+        let player = new THREE.Object3D();
+        let flashlight, personalGlow, ambientLight;
+        let creature, keyMesh, doorMesh;
+        let walls = [];
+        let wallMaterial;
+
+        let pitchObject = new THREE.Object3D();
+        let yawObject = new THREE.Object3D();
+
+        const container = document.getElementById('canvas-container');
+        const instructions = document.getElementById('instructions');
+
+        instructions.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                instructions.style.display = 'none';
+            } else {
+                if(!isGameOver) instructions.style.display = 'flex';
+            }
+        });
+
+        document.addEventListener('mousemove', (event) => {
+            if (document.pointerLockElement !== document.body || isGameOver) return;
+            const movementX = event.movementX || 0;
+            const movementY = event.movementY || 0;
+            yawObject.rotation.y -= movementX * 0.002;
+            pitchObject.rotation.x -= movementY * 0.002;
+            pitchObject.rotation.x = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, pitchObject.rotation.x));
+        });
+
+        const onKeyDown = (event) => {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+            }
+        };
+
+        const onKeyUp = (event) => {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.035); 
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            pitchObject.add(camera);
+            yawObject.add(pitchObject);
+            yawObject.position.set(0, 2, 0); 
+            player = yawObject;
+            scene.add(player);
+
+            // Flashlight setup
+            flashlight = new THREE.SpotLight(0xffffff, 28, 100, Math.PI / 2.2, 0.5, 0.5);
+            flashlight.position.set(0, 0, 0);
+            
+            const targetObject = new THREE.Object3D();
+            targetObject.position.set(0, 0, -1);
+            camera.add(targetObject);
+            flashlight.target = targetObject;
+            camera.add(flashlight);
+
+            personalGlow = new THREE.PointLight(0xffffff, 2.5, 15);
+            camera.add(personalGlow);
+
+            ambientLight = new THREE.AmbientLight(0x111111);
+            scene.add(ambientLight);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            const textureLoader = new THREE.TextureLoader();
+            
+            const wallTex = textureLoader.load(WALL_TEXTURE_URL, function(texture) {
+                texture.wrapS = THREE.RepeatWrapping;
+                texture.wrapT = THREE.RepeatWrapping;
+                texture.repeat.set(5, 1); 
+            });
+            wallMaterial = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.8 });
+
+            buildEnvironment();
+            spawnEntities(textureLoader);
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function buildEnvironment() {
+            const floorGeo = new THREE.PlaneGeometry(mapSize, mapSize);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+
+            const wallGeo = new THREE.BoxGeometry(mapSize, 12, 1);
+            const northWall = new THREE.Mesh(wallGeo, wallMaterial); northWall.position.set(0, 6, -mapSize/2); scene.add(northWall); walls.push(northWall);
+            const southWall = new THREE.Mesh(wallGeo, wallMaterial); southWall.position.set(0, 6, mapSize/2); scene.add(southWall); walls.push(southWall);
+            const eastWall = new THREE.Mesh(wallGeo, wallMaterial); eastWall.rotation.y = Math.PI / 2; eastWall.position.set(mapSize/2, 6, 0); scene.add(eastWall); walls.push(eastWall);
+            const westWall = new THREE.Mesh(wallGeo, wallMaterial); westWall.rotation.y = Math.PI / 2; westWall.position.set(-mapSize/2, 6, 0); scene.add(westWall); walls.push(westWall);
+
+            for(let i = 0; i < 18; i++) {
+                const pWidth = Math.random() * 6 + 4;
+                const pDepth = Math.random() * 6 + 4;
+                const pillarGeo = new THREE.BoxGeometry(pWidth, 12, pDepth);
+                const pillar = new THREE.Mesh(pillarGeo, wallMaterial);
+                
+                let px = (Math.random() - 0.5) * (mapSize - 20);
+                let pz = (Math.random() - 0.5) * (mapSize - 20);
+                if(Math.abs(px) < 12) px += 18;
+                if(Math.abs(pz) < 12) pz += 18;
+
+                pillar.position.set(px, 6, pz);
+                scene.add(pillar);
+                walls.push(pillar);
+            }
+        }
+
+        function spawnEntities(textureLoader) {
+            // Native Sprite handling for transparent PNGs
+            const keyTex = textureLoader.load(KEY_TEXTURE_URL);
+            const keyMat = new THREE.SpriteMaterial({ map: keyTex, transparent: true });
+            keyMesh = new THREE.Sprite(keyMat);
+            keyMesh.scale.set(2, 2, 1);
+            keyMesh.position.set((Math.random() - 0.5) * (mapSize - 15), 1.5, (Math.random() - 0.5) * (mapSize - 15));
+            scene.add(keyMesh);
+
+            const keyLight = new THREE.PointLight(0xffd700, 3, 12);
+            keyMesh.add(keyLight);
+
+            const doorGeo = new THREE.BoxGeometry(5, 8, 0.6);
+            const doorMat = new THREE.MeshStandardMaterial({ color: 0x440000, emissive: 0x550000 });
+            doorMesh = new THREE.Mesh(doorGeo, doorMat);
+            doorMesh.position.set((Math.random() - 0.5) * (mapSize - 15), 4, -(mapSize/2 - 1.2));
+            scene.add(doorMesh);
+
+            const monsterTex = textureLoader.load(MONSTER_TEXTURE_URL);
+            const monsterMat = new THREE.SpriteMaterial({ map: monsterTex, transparent: true });
+            creature = new THREE.Sprite(monsterMat);
+            creature.scale.set(5, 6.5, 1);
+            creature.position.set(32, 3.25, 32);
+            scene.add(creature);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (isGameOver) return;
+
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+
+            if (moveForward || moveBackward) velocity.z -= direction.z * 130.0 * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * 130.0 * delta;
+
+            const oldX = player.position.x;
+            const oldZ = player.position.z;
+
+            player.translateX(-velocity.x * delta);
+            player.translateZ(-velocity.z * delta);
+            player.position.y = 2; 
+
+            const playerRadius = 1.2;
+            for(let wall of walls) {
+                const bbox = new THREE.Box3().setFromObject(wall);
+                bbox.expandByScalar(playerRadius);
+                if(bbox.containsPoint(player.position)) {
+                    player.position.x = oldX;
+                    player.position.z = oldZ;
+                    break;
+                }
+            }
+
+            if(creature) {
+                const monsterSpeed = hasKey ? 5.2 : 3.0; 
+                const dirToPlayer = new THREE.Vector3().subVectors(player.position, creature.position);
+                dirToPlayer.y = 0; 
+                dirToPlayer.normalize();
+                creature.position.add(dirToPlayer.multiplyScalar(monsterSpeed * delta));
+            }
+
+            const distToCreature = player.position.distanceTo(creature.position);
+            const distToDoor = player.position.distanceTo(doorMesh.position);
+
+            if (distToCreature < 2.2) {
+                endGame(false);
+            }
+
+            if (!hasKey && keyMesh) {
+                const distToKey = player.position.distanceTo(keyMesh.position);
+                if (distToKey < 2.2) {
+                    hasKey = true;
+                    scene.remove(keyMesh);
+                    document.getElementById('objective').innerText = "Objective: UNLOCK THE RED DOOR";
+                    document.getElementById('objective').style.color = "#ff3333";
+                    doorMesh.material.emissive.setHex(0xff0000);
+                }
+            }
+
+            if (hasKey && distToDoor < 3.2) {
+                endGame(true);
+            }
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+
+        function endGame(isVictory) {
+            isGameOver = true;
+            document.exitPointerLock();
+            if (isVictory) {
+                document.getElementById('victory').style.display = 'flex';
+            } else {
+                document.getElementById('game-over').style.display = 'flex';
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+    </script>
+</body>
+</html>
